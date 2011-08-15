@@ -1,6 +1,6 @@
 /**
- * @preserve Morf v0.1
- * http://www.joelambert.co.uk/tween
+ * @preserve Morf v0.1.5
+ * http://www.joelambert.co.uk/morf
  *
  * Copyright 2011, Joe Lambert.
  * Free to use under the MIT license.
@@ -17,11 +17,13 @@ var Morf = function(elem, css, opts) {
 		timingFunction: 'ease',
 		duration: null,
 		increment: 0.01,
-		debug: false
+		debug: false,
+		optimise: true, // Whether the outputted CSS should be optimised
+		decimalPlaces: 5 // How many decimal places to optimise the WebKitCSSMatrix output to
 	},
 		
 	// Define all other var's used in the function
-	i = rule = ruleName = camel = m1 = m2 = progress = frame = rule = transEvent = null,
+	i = rule = ruleName = camel = m1 = m2 = progress = frame = rule = transEvent = val = null, cacheKey = '',
 	
 	// Setup a scoped reference to ourselves
 	_this = this,
@@ -29,18 +31,28 @@ var Morf = function(elem, css, opts) {
 	keyframes = {},
 	
 	// Create a unique name for this animation
-	animName = 'anim'+(new Date().getTime());
+	animName = 'anim'+(new Date().getTime()),
 	
 
 	/* --- Helper Functions ------------------------------------------------------------------- */
 	
 	// Event listener for the webkitAnimationEnd Event
 	animationEndListener = function(event){
-		// Dispatch a faux webkitTransitionEnd event to complete the appearance of this being a transition rather than an animation
 		elem.removeEventListener('webkitAnimationEnd', animationEndListener, true);
+		
+		// Dispatch a faux webkitTransitionEnd event to complete the appearance of this being a transition rather than an animation
+		// TODO: Should we throw an event for each property changed? (event.propertyName = 'opacity' etc)
 		transEvent = document.createEvent("Event");
 		transEvent.initEvent("webkitTransitionEnd", true, true);
 		elem.dispatchEvent(transEvent);
+		
+		// Reset transition effects after use
+		elem.style.webkitTransitionTimingFunction = null;
+		elem.style.webkitTransitionDuration = 0;
+		
+		if (options.callback) {
+			options.callback(elem);
+		}
 	},
 	
 	// Adds the CSS to the current page
@@ -72,7 +84,37 @@ var Morf = function(elem, css, opts) {
 			str += fStr;
 		}
 		
-		return str + " }";
+		return options.optimise ? optimiseCSS(str+' }') : str+' }';
+	},
+	
+	// Replaces scale(0) with 0.0001 to get around the inability to these decompose matrix
+	sanityCheckTransformString = function(str) {
+		var scale = str.match(/scale[Y|X|Z]*\([0-9, ]*0[,0-9 ]*\)/g),
+			i = 0;
+		
+		if(scale)
+		{
+			// There might be multiple scale() properties in the string
+			for(i = 0; i < scale.length; i++)
+				str = str.replace(scale[i], scale[i].replace(/([^0-9])0([^0.9])/g, "$10.0001$2"));
+		}
+		
+		return str;
+	},
+	
+	// WebKitCSSMatrix toString() ALWAYS outputs numbers to 5 decimal places - this helps optimise the string
+	optimiseCSS = function(str, decimalPlaces) {
+		decimalPlaces = typeof options.decimalPlaces == 'number' ? options.decimalPlaces : 5;
+		var matches = str.match(/[0-9\.]+/gm), 
+			i = 0;
+		
+		if(matches)
+		{
+			for(i = 0; i < matches.length; i++)
+				str = str.replace(matches[i], parseFloat( parseFloat(matches[i]).toFixed(decimalPlaces)));
+		}
+		
+		return str;
 	};
 	
 	/* --- Helper Functions End --------------------------------------------------------------- */	
@@ -94,10 +136,30 @@ var Morf = function(elem, css, opts) {
 		elem.style.webkitTransitionDuration = options.duration;
 		elem.style.webkitTransitionTimingFunction = options.timingFunction;
 		
-		for(rule in css) {
-			camel = this.util.toCamel(rule);	
-			elem.style[camel] = css[rule];
-		}
+		// Listen for the transitionEnd event to fire the callback if needed
+		var transitionEndListener = function(event) {
+			elem.removeEventListener('webkitTransitionEnd', transitionEndListener, true);
+			
+			// Clean up after ourself
+			elem.style.webkitTransitionDuration = 0;
+			elem.style.webkitTransitionTimingFunction = null;
+			
+			if (options.callback) {
+				// Delay execution to ensure the clean up CSS has taken effect
+				setTimeout(function() {
+					options.callback(elem);
+				}, 10);
+			}
+		};
+		
+		elem.addEventListener('webkitTransitionEnd', transitionEndListener, true);
+		
+		setTimeout(function() {
+			for(rule in css) {
+				camel = _this.util.toCamel(rule);	
+				elem.style[camel] = css[rule];
+			}
+		}, 10);
 		
 		this.css = '';
 		
@@ -110,61 +172,81 @@ var Morf = function(elem, css, opts) {
 		elem.style.webkitTransitionDuration = 0;
 	}
 	
+	// Create the key used to cache this animation
+	cacheKey += options.timingFunction;
+	
 	// Setup the start and end CSS state
 	for(rule in css)
 	{
-		camel = this.util.toCamel(rule);	
+		camel = this.util.toCamel(rule);
 		
 		toElem.style[camel] = css[rule];
 
-		// Set the from/start state	
-		from[this.util.toDash(camel)] = (camel == 'WebkitTransform') ? new WebKitCSSMatrix(elem.style.WebkitTransform) 	: elem.style[camel];
+		// Set the from/start state				
+		from[rule] = (camel == 'WebkitTransform') ? new WebKitCSSMatrix( sanityCheckTransformString( window.getComputedStyle(elem)['-webkit-transform'] ) )	: window.getComputedStyle(elem)[rule];
 	
 		// Set the to/end state
-		to[this.util.toDash(camel)]	  = (camel == 'WebkitTransform') ? new WebKitCSSMatrix(toElem.style.WebkitTransform) : toElem.style[camel];
+		to[rule]   = (camel == 'WebkitTransform') ? new WebKitCSSMatrix( sanityCheckTransformString( toElem.style.WebkitTransform ) ) : toElem.style[camel];
+		
+		// Shifty requires numeric values to be a number rather than a string (e.g. for opacity)
+		from[rule] = from[rule] == (val = parseInt(from[rule], 10)) ? val : from[rule];
+		to[rule]   = to[rule] 	== (val = parseInt(from[rule], 10)) ? val : to[rule];
+		
+		// Update the cacheKey
+		cacheKey += ';' + rule + ':' + from[rule] + '->' + to[rule];
 	}
-
-	
-	// Produce decompositions of matrices here so we don't have to redo it on each iteration
-	// Decomposing the matrix is expensive so we need to minimise these requests
-	if(from['-webkit-transform'])
+		
+	// Check the cache to save expensive calculations
+	if(Morf.cache[cacheKey])
 	{
-		m1 = from['-webkit-transform'].decompose();
-		m2 = to['-webkit-transform'].decompose();
+		this.css = Morf.cache[cacheKey].css;
+		animName = Morf.cache[cacheKey].name;
 	}
-	
-	// Produce style keyframes
-	for(progress = 0; progress <= 1; progress += options.increment) {
-		// Use Shifty.js to work out the interpolated CSS state
-		frame = Tweenable.util.interpolate(from, to, progress, options.timingFunction);
-		
-		// Work out the interpolated matrix transformation
-		if(m1 !== null && m2 !== null)
-			frame['-webkit-transform'] = m1.tween(m2, progress, Tweenable.prototype.formula[options.timingFunction]);
-		
-		keyframes[parseInt(progress*100)+'%'] = frame;
+	else
+	{
+		// Produce decompositions of matrices here so we don't have to redo it on each iteration
+		// Decomposing the matrix is expensive so we need to minimise these requests
+		if(from['-webkit-transform'])
+		{
+			m1 = from['-webkit-transform'].decompose();
+			m2 = to['-webkit-transform'].decompose();
+		}
+
+		// Produce style keyframes
+		for(progress = 0; progress <= 1; progress += options.increment) {
+			// Use Shifty.js to work out the interpolated CSS state
+			frame = Tweenable.util.interpolate(from, to, progress, options.timingFunction);
+
+			// Work out the interpolated matrix transformation
+			if(m1 !== null && m2 !== null)
+				frame['-webkit-transform'] = m1.tween(m2, progress, Tweenable.prototype.formula[options.timingFunction]);
+
+			keyframes[parseInt(progress*100, 10)+'%'] = frame;
+		}
+
+		// Ensure the last frame has been added
+		keyframes['100%'] = to;
+
+		// Add the new animation to the document
+		this.css = createAnimationCSS(keyframes, animName);
+		addKeyframeRule(this.css);
+
+		Morf.cache[cacheKey] = {css: this.css, name: animName};
 	}
-	
-	// Ensure the last frame has been added
-	keyframes['100%'] = to;
-	
-	// Add the new animation to the document
-	this.css = createAnimationCSS(keyframes, animName);
-	addKeyframeRule(this.css);
 	
 	// Set the final position state as this should be a transition not an animation & the element should end in the 'to' state
 	for(rule in to) 
 		elem.style[this.util.toCamel(rule)] = to[rule];
 	
 	// Trigger the animation
-	elem.addEventListener('webkitAnimationEnd', animationEndListener);
+	elem.addEventListener('webkitAnimationEnd', animationEndListener, true);
 	elem.style.webkitAnimationDuration = options.duration;
 	elem.style.webkitAnimationTimingFunction = 'linear';
 	elem.style.webkitAnimationName = animName;
 	
 	// Print the animation to the console if the debug switch is given
 	if(options.debug && window.console && window.console.log)
-		console.log(createAnimationCSS(keyframes, animName));
+		console.log(this.css);
 };
 
 
@@ -185,12 +267,17 @@ var Morf = function(elem, css, opts) {
 
 Morf.transition = function(elem, css, opts){
 	return new Morf(elem, css, opts);
-}
+};
+
+/**
+ * Object to cache generated animations
+ */
+Morf.cache = {};
 
 /**
  * Current version
  */
-Morf.version = '0.1';;
+Morf.version = '0.1.5';
 
 // Utilities Placeholder
 Morf.prototype.util = {};
@@ -216,7 +303,7 @@ Morf.prototype.util.toDash = function(str){
 
 Morf.prototype.util.toCamel = function(str){
 	return str.replace(/(\-[a-z])/g, function($1){return $1.toUpperCase().replace('-','');});
-};;
+};
 
 // Wrap this functionality up to prevent poluting the global namespace
 (function(){
@@ -330,7 +417,7 @@ var CSSMatrixDecomposed = function(obj) {
 	
 	for(var i in components)
 		this[i] = obj[i] ? obj[i] : new Vector4();
-	
+
 	/**
 	 * Tween between two decomposed matrices
 	 * @param {CSSMatrixDecomposed} dm The destination decomposed matrix
@@ -343,7 +430,10 @@ var CSSMatrixDecomposed = function(obj) {
 	this.tween = function(dm, progress, fn) {
 		if(fn === undefined)
 			fn = function(pos) {return pos;}; // Default to a linear easing
-			
+		
+		if(!dm)
+			dm = new CSSMatrixDecomposed(new WebKitCSSMatrix().decompose());
+		
 		var r = new CSSMatrixDecomposed(),
 			i = index = null,
 			trans = '';
@@ -352,7 +442,7 @@ var CSSMatrixDecomposed = function(obj) {
 
 		for(index in components)
 			for(i in {x:'x', y:'y', z:'z', w:'w'})
-				r[index][i] = parseFloat((this[index][i] + (dm[index][i] - this[index][i]) * progress ).toFixed(10));
+				r[index][i] = (this[index][i] + (dm[index][i] - this[index][i]) * progress ).toFixed(5);
 
 		trans = 'matrix3d(1,0,0,0, 0,1,0,0, 0,0,1,0, '+r.perspective.x+', '+r.perspective.y+', '+r.perspective.z+', '+r.perspective.w+') ' +
 				'translate3d('+r.translate.x+'px, '+r.translate.y+'px, '+r.translate.y+'px) ' +
@@ -361,7 +451,7 @@ var CSSMatrixDecomposed = function(obj) {
 				'matrix3d(1,0,0,0, 0,1,0,0, '+r.skew.y+',0,1,0, 0,0,0,1) ' +
 				'matrix3d(1,0,0,0, '+r.skew.x+',1,0,0, 0,0,1,0, 0,0,0,1) ' +
 				'scale3d('+r.scale.x+', '+r.scale.y+', '+r.scale.z+')';
-		
+
 		try { r = new WebKitCSSMatrix(trans); return r; }
 		catch(e) { console.error('Invalid matrix string: '+trans); return '' };
 	};
@@ -456,7 +546,7 @@ WebKitCSSMatrix.prototype.determinant = function() {
  * Decomposes the matrix into its component parts.
  * A Javascript implementation of the pseudo code available from http://www.w3.org/TR/css3-2d-transforms/#matrix-decomposition
  * @author Joe Lambert
- * @returns {Object} An object with each of the components of the matrix (perspective, translate, skew, scale, rotate)
+ * @returns {Object} An object with each of the components of the matrix (perspective, translate, skew, scale, rotate) or identity matrix on failure
  */
 
 WebKitCSSMatrix.prototype.decompose = function() {
@@ -464,11 +554,10 @@ WebKitCSSMatrix.prototype.decompose = function() {
 		perspectiveMatrix = rightHandSide = inversePerspectiveMatrix = transposedInversePerspectiveMatrix =
 		perspective = translate = row = i = scale = skew = pdum3 =  rotate = null;
 	
-	// Normalize the matrix.
 	if (matrix.m33 == 0)
-	    return false;
+	    return new CSSMatrixDecomposed(new WebKitCSSMatrix().decompose()); // Return the identity matrix
 
-
+	// Normalize the matrix.
 	for (i = 1; i <= 4; i++)
 	    for (j = 1; j <= 4; j++)
 	        matrix['m'+i+j] /= matrix.m44;
@@ -483,7 +572,7 @@ WebKitCSSMatrix.prototype.decompose = function() {
 	perspectiveMatrix.m44 = 1;
 
 	if (perspectiveMatrix.determinant() == 0)
-	    return false;
+	    return new CSSMatrixDecomposed(new WebKitCSSMatrix().decompose()); // Return the identity matrix
 
 	// First, isolate perspective.
 	if (matrix.m14 != 0 || matrix.m24 != 0 || matrix.m34 != 0)
@@ -593,38 +682,34 @@ WebKitCSSMatrix.prototype.decompose = function() {
 };
 
 
-})();;
+})();
 
 /**
- * @preserve
- * Shifty v0.1.3 - A teeny tiny tweening engine in JavaScript. 
- * By Jeremy Kahn - jeremyckahn@gmail.com
- * For instructions on how to use Shifty, please consult the README: https://github.com/jeremyckahn/tweeny/blob/master/README.md
- * MIT Lincense.  This code free to use, modify, distribute and enjoy.
- */
+Mifty - A custom build of Shifty for use with Morf.js.
+By Jeremy Kahn - jeremyckahn@gmail.com
+  v0.4.1
 
-(function(b){function a(){return+new Date}function f(a,c){for(var d in a)a.hasOwnProperty(d)&&c(a,d)}function j(a,c){f(c,function(c,e){a[e]=c[e]});return a}function k(a,c){f(c,function(c,e){typeof a[e]==="undefined"&&(a[e]=c[e])});return a}function g(a,c,d){var e,a=(a-c.timestamp)/c.duration;for(e in d.current)d.current.hasOwnProperty(e)&&c.to.hasOwnProperty(e)&&(d.current[e]=c.originalState[e]+(c.to[e]-c.originalState[e])*c.easingFunc(a));return d.current}function m(a,c,d,e){var b;for(b=0;b<c[a].length;b++)c[a][b].apply(d,
-e)}function i(a,c,d){f(b.Tweenable.prototype.filter,function(e,b){e[b][a]&&e[b][a].apply(c,d)})}function n(h,c){var d;d=a();d<h.timestamp+h.duration&&c.isAnimating?(i("beforeTween",h.owner,[c.current,h.originalState,h.to]),g(d,h,c),i("afterTween",h.owner,[c.current,h.originalState,h.to]),h.hook.step&&m("step",h.hook,h.owner,[c.current]),h.step.call(c.current),c.loopId=setTimeout(function(){n(h,c)},1E3/h.fps)):h.owner.stop(!0)}function l(){this.init=function(a){a=a||{};this._hook={};this._tweenParams=
-{owner:this,hook:this._hook};this._state={};this._state.current=a.initialState||{};this.fps=a.fps||30;this.easing=a.easing||"linear";this.duration=a.duration||500;return this};this.tween=function(h,c,d,e,b){var f=this;if(!this._state.isAnimating)return this._state.loopId=0,this._state.pausedAtTime=null,c?(this._tweenParams.step=function(){},this._state.current=h||{},this._tweenParams.to=c||{},this._tweenParams.duration=d||this.duration,this._tweenParams.callback=e||function(){},this._tweenParams.easing=
-b||this.easing):(this._tweenParams.step=h.step||function(){},this._tweenParams.callback=h.callback||function(){},this._state.current=h.from||{},this._tweenParams.to=h.to||h.target||{},this._tweenParams.duration=h.duration||this.duration,this._tweenParams.easing=h.easing||this.easing),this._tweenParams.timestamp=a(),this._tweenParams.easingFunc=this.formula[this._tweenParams.easing]||this.formula.linear,k(this._state.current,this._tweenParams.to),k(this._tweenParams.to,this._state.current),i("tweenCreated",
-this._tweenParams.owner,[this._state.current,this._tweenParams.originalState,this._tweenParams.to]),this._tweenParams.originalState=j({},this._state.current),this._state.isAnimating=!0,setTimeout(function(){n(f._tweenParams,f._state)},1E3/this.fps),this};this.to=function(a,c,d,e){typeof c==="undefined"?(a.from=this._state.current,this.tween(a)):this.tween(this._state.current,a,c,d,e);return this};this.get=function(){return this._state.current};this.set=function(a){this._state.current=a||{}};this.stop=
-function(a){clearTimeout(this._state.loopId);this._state.isAnimating=!1;a&&(j(this._state.current,this._tweenParams.to),this._tweenParams.callback.call(this._state.current));return this};this.pause=function(){clearTimeout(this._state.loopId);this._state.pausedAtTime=a();this._state.isPaused=!0;return this};this.resume=function(){var a=this;this._state.isPaused&&(this._tweenParams.timestamp+=this._state.pausedAtTime-this._tweenParams.timestamp);setTimeout(function(){n(a._tweenParams,a._state)},1E3/
-this.fps);return this};this.hookAdd=function(a,c){this._hook.hasOwnProperty(a)||(this._hook[a]=[]);this._hook[a].push(c)};this.hookRemove=function(a,c){var d;if(this._hook.hasOwnProperty(a))if(c)for(d=this._hook[a].length;d>=0;d++)this._hook[a][d]===c&&this._hook[a].splice(d,1);else this._hook[a]=[]};return this}l.prototype.filter={};l.util={now:a,each:f,tweenProps:g,applyFilter:i,simpleCopy:j};l.prototype.formula={linear:function(a){return a}};b.Tweenable=l})(this);
-(function(b){b.Tweenable.util.simpleCopy(b.Tweenable.prototype.formula,{easeInQuad:function(a){return Math.pow(a,2)},easeOutQuad:function(a){return-(Math.pow(a-1,2)-1)},easeInOutQuad:function(a){if((a/=0.5)<1)return 0.5*Math.pow(a,2);return-0.5*((a-=2)*a-2)},easeInCubic:function(a){return Math.pow(a,3)},easeOutCubic:function(a){return Math.pow(a-1,3)+1},easeInOutCubic:function(a){if((a/=0.5)<1)return 0.5*Math.pow(a,3);return 0.5*(Math.pow(a-2,3)+2)},easeInQuart:function(a){return Math.pow(a,4)},easeOutQuart:function(a){return-(Math.pow(a-
+For instructions on how to use Shifty, please consult the README: https://github.com/jeremyckahn/shifty/blob/master/README.md
+
+MIT Lincense.  This code free to use, modify, distribute and enjoy.
+
+*/
+
+(function(e){function a(){return+new Date}function b(a,c){for(var j in a)a.hasOwnProperty(j)&&c(a,j)}function h(a,c){b(c,function(c,f){a[f]=c[f]});return a}function k(a,c){b(c,function(c,f){typeof a[f]==="undefined"&&(a[f]=c[f])});return a}function i(a,c,j){var f,a=(a-c.timestamp)/c.duration;for(f in j.current)j.current.hasOwnProperty(f)&&c.to.hasOwnProperty(f)&&(j.current[f]=c.originalState[f]+(c.to[f]-c.originalState[f])*c.easingFunc(a));return j.current}function n(a,c,j,f){var b;for(b=0;b<c[a].length;b++)c[a][b].apply(j,
+f)}function l(a,c,j){b(e.Tweenable.prototype.filter,function(b,e){b[e][a]&&b[e][a].apply(c,j)})}function m(d,c){var b;b=a();b<d.timestamp+d.duration&&c.isAnimating?(l("beforeTween",d.owner,[c.current,d.originalState,d.to]),i(b,d,c),l("afterTween",d.owner,[c.current,d.originalState,d.to]),d.hook.step&&n("step",d.hook,d.owner,[c.current]),d.step.call(c.current),c.loopId=setTimeout(function(){m(d,c)},1E3/d.owner.fps)):d.owner.stop(!0)}function g(a){a=a||{};this._hook={};this._tweenParams={owner:this,
+hook:this._hook};this._state={};this._state.current=a.initialState||{};this.fps=a.fps||30;this.easing=a.easing||"linear";this.duration=a.duration||500;return this}g.prototype.tween=function(d,c,b,e,g){var i=this;if(!this._state.isAnimating)return this._state.loopId=0,this._state.pausedAtTime=null,c?(this._tweenParams.step=function(){},this._state.current=d||{},this._tweenParams.to=c||{},this._tweenParams.duration=b||this.duration,this._tweenParams.callback=e||function(){},this._tweenParams.easing=
+g||this.easing):(this._tweenParams.step=d.step||function(){},this._tweenParams.callback=d.callback||function(){},this._state.current=d.from||{},this._tweenParams.to=d.to||d.target||{},this._tweenParams.duration=d.duration||this.duration,this._tweenParams.easing=d.easing||this.easing),this._tweenParams.timestamp=a(),this._tweenParams.easingFunc=this.formula[this._tweenParams.easing]||this.formula.linear,k(this._state.current,this._tweenParams.to),k(this._tweenParams.to,this._state.current),l("tweenCreated",
+this._tweenParams.owner,[this._state.current,this._tweenParams.originalState,this._tweenParams.to]),this._tweenParams.originalState=h({},this._state.current),this._state.isAnimating=!0,setTimeout(function(){m(i._tweenParams,i._state)},1E3/this.fps),this};g.prototype.to=function(a,c,b,e){typeof c==="undefined"?(a.from=this.get(),this.tween(a)):this.tween(this.get(),a,c,b,e);return this};g.prototype.get=function(){return this._state.current};g.prototype.set=function(a){this._state.current=a||{};return this};
+g.prototype.stop=function(a){clearTimeout(this._state.loopId);this._state.isAnimating=!1;a&&(h(this._state.current,this._tweenParams.to),this._tweenParams.callback.call(this._state.current));return this};g.prototype.pause=function(){clearTimeout(this._state.loopId);this._state.pausedAtTime=a();this._state.isPaused=!0;return this};g.prototype.resume=function(){var a=this;this._state.isPaused&&(this._tweenParams.timestamp+=this._state.pausedAtTime-this._tweenParams.timestamp);setTimeout(function(){m(a._tweenParams,
+a._state)},1E3/this.fps);return this};g.prototype.hookAdd=function(a,c){this._hook.hasOwnProperty(a)||(this._hook[a]=[]);this._hook[a].push(c)};g.prototype.hookRemove=function(a,c){var b;if(this._hook.hasOwnProperty(a))if(c)for(b=this._hook[a].length;b>=0;b++)this._hook[a][b]===c&&this._hook[a].splice(b,1);else this._hook[a]=[]};g.prototype.filter={};g.util={now:a,each:b,tweenProps:i,applyFilter:l,simpleCopy:h};g.prototype.formula={linear:function(a){return a}};e.Tweenable=g})(this);
+(function(e){e.Tweenable.util.simpleCopy(e.Tweenable.prototype.formula,{easeInQuad:function(a){return Math.pow(a,2)},easeOutQuad:function(a){return-(Math.pow(a-1,2)-1)},easeInOutQuad:function(a){if((a/=0.5)<1)return 0.5*Math.pow(a,2);return-0.5*((a-=2)*a-2)},easeInCubic:function(a){return Math.pow(a,3)},easeOutCubic:function(a){return Math.pow(a-1,3)+1},easeInOutCubic:function(a){if((a/=0.5)<1)return 0.5*Math.pow(a,3);return 0.5*(Math.pow(a-2,3)+2)},easeInQuart:function(a){return Math.pow(a,4)},easeOutQuart:function(a){return-(Math.pow(a-
 1,4)-1)},easeInOutQuart:function(a){if((a/=0.5)<1)return 0.5*Math.pow(a,4);return-0.5*((a-=2)*Math.pow(a,3)-2)},easeInQuint:function(a){return Math.pow(a,5)},easeOutQuint:function(a){return Math.pow(a-1,5)+1},easeInOutQuint:function(a){if((a/=0.5)<1)return 0.5*Math.pow(a,5);return 0.5*(Math.pow(a-2,5)+2)},easeInSine:function(a){return-Math.cos(a*(Math.PI/2))+1},easeOutSine:function(a){return Math.sin(a*(Math.PI/2))},easeInOutSine:function(a){return-0.5*(Math.cos(Math.PI*a)-1)},easeInExpo:function(a){return a==
 0?0:Math.pow(2,10*(a-1))},easeOutExpo:function(a){return a==1?1:-Math.pow(2,-10*a)+1},easeInOutExpo:function(a){if(a==0)return 0;if(a==1)return 1;if((a/=0.5)<1)return 0.5*Math.pow(2,10*(a-1));return 0.5*(-Math.pow(2,-10*--a)+2)},easeInCirc:function(a){return-(Math.sqrt(1-a*a)-1)},easeOutCirc:function(a){return Math.sqrt(1-Math.pow(a-1,2))},easeInOutCirc:function(a){if((a/=0.5)<1)return-0.5*(Math.sqrt(1-a*a)-1);return 0.5*(Math.sqrt(1-(a-=2)*a)+1)},easeOutBounce:function(a){return a<1/2.75?7.5625*
 a*a:a<2/2.75?7.5625*(a-=1.5/2.75)*a+0.75:a<2.5/2.75?7.5625*(a-=2.25/2.75)*a+0.9375:7.5625*(a-=2.625/2.75)*a+0.984375},easeInBack:function(a){return a*a*(2.70158*a-1.70158)},easeOutBack:function(a){return(a-=1)*a*(2.70158*a+1.70158)+1},easeInOutBack:function(a){var b=1.70158;if((a/=0.5)<1)return 0.5*a*a*(((b*=1.525)+1)*a-b);return 0.5*((a-=2)*a*(((b*=1.525)+1)*a+b)+2)},elastic:function(a){return-1*Math.pow(4,-8*a)*Math.sin((a*6-1)*2*Math.PI/2)+1},swingFromTo:function(a){var b=1.70158;return(a/=0.5)<
 1?0.5*a*a*(((b*=1.525)+1)*a-b):0.5*((a-=2)*a*(((b*=1.525)+1)*a+b)+2)},swingFrom:function(a){return a*a*(2.70158*a-1.70158)},swingTo:function(a){return(a-=1)*a*(2.70158*a+1.70158)+1},bounce:function(a){return a<1/2.75?7.5625*a*a:a<2/2.75?7.5625*(a-=1.5/2.75)*a+0.75:a<2.5/2.75?7.5625*(a-=2.25/2.75)*a+0.9375:7.5625*(a-=2.625/2.75)*a+0.984375},bouncePast:function(a){return a<1/2.75?7.5625*a*a:a<2/2.75?2-(7.5625*(a-=1.5/2.75)*a+0.75):a<2.5/2.75?2-(7.5625*(a-=2.25/2.75)*a+0.9375):2-(7.5625*(a-=2.625/2.75)*
 a+0.984375)},easeFromTo:function(a){if((a/=0.5)<1)return 0.5*Math.pow(a,4);return-0.5*((a-=2)*Math.pow(a,3)-2)},easeFrom:function(a){return Math.pow(a,4)},easeTo:function(a){return Math.pow(a,0.25)}})})(this);
-(function(b){function a(a,b){return function(){a();b.shift();if(b.length)b[0]();else b.running=!1}}function f(a,b,g,f,i,n){return function(){g?a.tween(b,g,f,i,n):(b.callback=i,b.from?a.tween(b):a.to(b))}}if(b.Tweenable)b.Tweenable.prototype.queue=function(b,k,g,m,i){if(!this._tweenQueue)this._tweenQueue=[];m=m||b.callback||function(){};m=a(m,this._tweenQueue);this._tweenQueue.push(f(this,b,k,g,m,i));if(!this._tweenQueue.running)this._tweenQueue[0](),this._tweenQueue.running=!0;return this},b.Tweenable.prototype.queueShift=
-function(){this._tweenQueue.shift();return this},b.Tweenable.prototype.queuePop=function(){this._tweenQueue.pop();return this},b.Tweenable.prototype.queueEmpty=function(){this._tweenQueue.length=0;return this},b.Tweenable.prototype.queueLength=function(){return this._tweenQueue.length}})(this);
-(function(b){function a(a){return parseInt(a,16)}function f(h){b.Tweenable.util.each(h,function(c,b){if(typeof c[b]==="string"&&(m.test(c[b])||i.test(c[b]))){var e;e=c[b];e=e.replace(/#/g,"");e.length===3&&(e=e.split(""),e=e[0]+e[0]+e[1]+e[1]+e[2]+e[2]);e=[a(e.substr(0,2)),a(e.substr(2,2)),a(e.substr(4,2))];c[b]="rgb("+e[0]+","+e[1]+","+e[2]+")"}})}function j(a){var c;c=[];b.Tweenable.util.each(a,function(a,b){typeof a[b]==="string"&&(m.test(a[b])||i.test(a[b])||n.test(a[b]))&&c.push(b)});return c}
-function k(a,b){var d,e,i;e=b.length;for(d=0;d<e;d++)i=a[b[d]].match(/(\d+)/g),a["__r__"+b[d]]=+i[0],a["__g__"+b[d]]=+i[1],a["__b__"+b[d]]=+i[2],delete a[b[d]]}function g(a,b){var d,e;e=b.length;for(d=0;d<e;d++)a[b[d]]="rgb("+parseInt(a["__r__"+b[d]],10)+","+parseInt(a["__g__"+b[d]],10)+","+parseInt(a["__b__"+b[d]],10)+")",delete a["__r__"+b[d]],delete a["__g__"+b[d]],delete a["__b__"+b[d]]}var m=/^#([0-9]|[a-f]){3}$/i,i=/^#([0-9]|[a-f]){6}$/i,n=/^rgb\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\)\s*$/i,l;if(b.Tweenable)b.Tweenable.prototype.filter.color=
-{tweenCreated:function(a,b,d){f(a);f(b);f(d)},beforeTween:function(a,b,d){l=j(b);k(a,l);k(b,l);k(d,l)},afterTween:function(a,b,d){g(a,l);g(b,l);g(d,l)}}})(this);
-(function(b){function a(a){var i;i=[];b.Tweenable.util.each(a,function(a,b){typeof a[b]==="string"&&k.test(a[b])&&i.push(b)});return i}function f(a,b){var f,g;g=b.length;for(f=0;f<g;f++)a[b[f]]=+a[b[f]].replace(k,"")}function j(a,b){var f,g;g=b.length;for(f=0;f<g;f++)a[b[f]]=Math.floor(a[b[f]])+"px"}var k=/px/i,g;if(b.Tweenable)b.Tweenable.prototype.filter.px={beforeTween:function(b,i,j){g=a(i);f(b,g);f(i,g);f(j,g)},afterTween:function(a,b,f){j(a,g);j(b,g);j(f,g)}}})(this);
-(function(b){if(b.Tweenable)b.Tweenable.util.interpolate=function(a,f,j,k){var g;if(a&&a.from)f=a.to,j=a.position,k=a.easing,a=a.from;g=b.Tweenable.util.simpleCopy({},a);b.Tweenable.util.applyFilter("tweenCreated",g,[g,a,f]);b.Tweenable.util.applyFilter("beforeTween",g,[g,a,f]);j=b.Tweenable.util.tweenProps(j,{originalState:a,to:f,timestamp:0,duration:1,easingFunc:b.Tweenable.prototype.formula[k]||b.Tweenable.prototype.formula.linear},{current:g});b.Tweenable.util.applyFilter("afterTween",j,[j,a,
-f]);return j},b.Tweenable.prototype.interpolate=function(a,f,j){a=b.Tweenable.util.interpolate(this.get(),a,f,j);this.set(a);return a}})(this);
-;
+(function(e){if(e.Tweenable)e.Tweenable.util.interpolate=function(a,b,h,k){var i;if(a&&a.from)b=a.to,h=a.position,k=a.easing,a=a.from;i=e.Tweenable.util.simpleCopy({},a);e.Tweenable.util.applyFilter("tweenCreated",i,[i,a,b]);e.Tweenable.util.applyFilter("beforeTween",i,[i,a,b]);h=e.Tweenable.util.tweenProps(h,{originalState:a,to:b,timestamp:0,duration:1,easingFunc:e.Tweenable.prototype.formula[k]||e.Tweenable.prototype.formula.linear},{current:i});e.Tweenable.util.applyFilter("afterTween",h,[h,a,
+b]);return h},e.Tweenable.prototype.interpolate=function(a,b,h){a=e.Tweenable.util.interpolate(this.get(),a,b,h);this.set(a);return a}})(this);
 
 /**
  * @preserve 
@@ -647,5 +732,5 @@ f]);return j},b.Tweenable.prototype.interpolate=function(a,f,j){a=b.Tweenable.ut
 	for(var t in scripty2)
 		Tweenable.prototype.formula[t] = scripty2[t];
 })();
-;
+
 

@@ -4,14 +4,16 @@ enyo.kind({
 	components: [
 		{kind: "Header", content: "Morf.js Demo"},
 		
-		{kind: "VFlexBox", style: "height:70px;", components: [
+		{style: "height:100px; margin-top:10px;", components: [
 			{kind: "HFlexBox", style: "height:52px; margin-top:10px; margin-bottom:10px;", components: [
-				{flex: 1},
+				{kind: "Spacer"},
 				{style: "background-color:#eeeeee; width: 552px;", components: [
-					{name: "myElem", content: "<div id='elem' style='width:50px; height:50px; background:#4B8A79; border:1px solid #000'></div>"}
+					// This is a div
+					{ name: "elem", style: "width:50px; height:50px; background:#4B8A79; border:1px solid #000" }
 				]},
-				{flex: 1}
-			]}
+				{kind: "Spacer"}
+			]},
+			{ name: "logInfo", content: "ohai", style: "text-align: center;" }
 		]},
 		
 		{kind: "FadeScroller", flex: 1, components: [
@@ -76,18 +78,19 @@ enyo.kind({
 			]}
 		]}
 	],
-	renderd: function() {
+	rendered: function() {
 		this.animated = false;
 	},
 	animate: function(inSender, inEvent) {
 		//console.log(inSender.onclick);
 		
+		this.showLog("begin animation");
+		
 		var easing = inSender.caption;
 		
 		// Get a reference to the element
-		var elem = document.getElementById('elem');
-		
-		var duration = "1500ms";
+		this.$.elem.hasNode();
+		var elem = this.$.elem.node;
 		
 		if (this.animated) {
 			var pos = "0px";
@@ -103,15 +106,24 @@ enyo.kind({
 		
 		var transform = 'translate3d('+ pos +', 0, 0) rotate('+ rotation +')';
 		
+		// Reference point
+		var that = this;
+		
 		var trans = Morf.transition( elem, {
 	        // New CSS state
 	        '-webkit-transform': transform,
 	        'background-color': color
 	    }, {
-	        duration: duration,
-	        timingFunction: easing
+	        duration: "1500ms",
+	        timingFunction: easing,
+	        callback: function (elem) {
+				// You can optionally add a callback option for when the animation completes.
+				that.showLog("end animation");
+			}
 	    });
 	    
-	    //console.log("finish");
+	},
+	showLog: function(msg) {
+		this.$.logInfo.setContent(msg);
 	}
 });
