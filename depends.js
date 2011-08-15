@@ -1,4 +1,4 @@
 enyo.depends(
-    "source/Morf.js",
+    "source/DemoApp.js",
 	"include/morf.js"
 );

@@ -1,5 +1,5 @@
 enyo.kind({
-    name: "Main.Morf",
+    name: "DemoApp",
 	kind: "VFlexBox",
 	components: [
 		{kind: "Header", content: "Morf.js Demo"},
@@ -13,7 +13,7 @@ enyo.kind({
 				]},
 				{kind: "Spacer"}
 			]},
-			{ name: "logInfo", content: "ohai", style: "text-align: center;" }
+			{ name: "logInfo", content: "", style: "text-align: center;" }
 		]},
 		
 		{kind: "FadeScroller", flex: 1, components: [
