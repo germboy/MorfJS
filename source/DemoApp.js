@@ -9,7 +9,7 @@ enyo.kind({
 				{kind: "Spacer"},
 				{style: "background-color:#eeeeee; width: 552px;", components: [
 					// This is a div
-					{ name: "elem", style: "width:50px; height:50px; background:#4B8A79; border:1px solid #000" }
+					{ name: "element", style: "width:50px; height:50px; background:#4B8A79; border:1px solid #000" }
 				]},
 				{kind: "Spacer"}
 			]},
@@ -89,8 +89,7 @@ enyo.kind({
 		var easing = inSender.caption;
 		
 		// Get a reference to the element
-		this.$.elem.hasNode();
-		var elem = this.$.elem.node;
+		var element = this.$.element.hasNode();
 		
 		if (this.animated) {
 			var pos = "0px";
@@ -106,22 +105,20 @@ enyo.kind({
 		
 		var transform = 'translate3d('+ pos +', 0, 0) rotate('+ rotation +')';
 		
-		// Reference point
-		var that = this;
-		
-		var trans = Morf.transition( elem, {
+		var trans = Morf.transition( element, {
 	        // New CSS state
 	        '-webkit-transform': transform,
 	        'background-color': color
 	    }, {
 	        duration: "1500ms",
 	        timingFunction: easing,
-	        callback: function (elem) {
-				// You can optionally add a callback option for when the animation completes.
-				that.showLog("end animation");
-			}
+	        // You can optionally add a callback option for when the animation completes.
+	        callback: enyo.bind( this, this.animationEnd )
 	    });
 	    
+	},
+	animationEnd: function() {
+		this.showLog("end animation");
 	},
 	showLog: function(msg) {
 		this.$.logInfo.setContent(msg);
